@@ -1,0 +1,6 @@
+---
+title: "P8105 HW6"
+author: "Yifan Wan"
+output: github_document
+---
+
