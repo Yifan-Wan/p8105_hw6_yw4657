@@ -4,3 +4,122 @@ author: "Yifan Wan"
 output: github_document
 ---
 
+```{r setup, include=FALSE}
+library(tidyverse)
+library(modelr)
+library(p8105.datasets)
+
+knitr::opts_chunk$set(
+  fig.width = 8,
+  fig.asp = 0.65,
+  out.width = "90%",
+  message = FALSE,
+  warning = FALSE
+)
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+set.seed(2026)
+```
+
+## Problem 1: Homicide investigations
+
+```{r homicide-clean}
+homicide_df =
+  read_csv("data/homicide-data.csv", show_col_types = FALSE) |>
+  mutate(
+    city_state = str_c(city, state, sep = ", "),
+    resolved = as.numeric(disposition == "Closed by arrest"),
+    victim_age = as.numeric(victim_age),
+    victim_race = factor(victim_race, levels = c("White", "Black")),
+    victim_sex = factor(victim_sex, levels = c("Female", "Male"))
+  ) |>
+  filter(
+    !city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL"),
+    victim_race %in% c("White", "Black")
+  ) |>
+  drop_na(resolved, victim_age, victim_sex, victim_race)
+
+homicide_df |>
+  count(city_state, name = "number_of_cases") |>
+  knitr::kable()
+```
+
+`resolved = 1` denotes cases closed by arrest; `resolved = 0` denotes cases not closed by arrest. 
+The comparison of interest is **Male versus Female**, holding victim age and race fixed.
+
+```{r baltimore-model}
+baltimore_fit =
+  homicide_df |>
+  filter(city_state == "Baltimore, MD") |>
+  glm(resolved ~ victim_age + victim_sex + victim_race,
+      data = _, family = binomial())
+
+broom::tidy(baltimore_fit) |>
+  mutate(
+    adjusted_or = exp(estimate),
+    or_ci_lower = exp(estimate - 1.96 * std.error),
+    or_ci_upper = exp(estimate + 1.96 * std.error)
+  ) |>
+  knitr::kable(digits = 3)
+
+baltimore_result =
+  broom::tidy(baltimore_fit) |>
+  filter(term == "victim_sexMale") |>
+  transmute(
+    city_state = "Baltimore, MD",
+    adjusted_or = exp(estimate),
+    lower_ci = exp(estimate - 1.96 * std.error),
+    upper_ci = exp(estimate + 1.96 * std.error)
+  )
+
+baltimore_result |> knitr::kable(digits = 3)
+```
+
+The adjusted odds ratio for case resolution comparing male victims with female victims in Baltimore 
+is `r round(baltimore_result$adjusted_or, 3)` (95% CI: `r round(baltimore_result$lower_ci, 3)` to 
+`r round(baltimore_result$upper_ci, 3)`). 
+An odds ratio less than 1 indicates lower adjusted odds of a case being closed by arrest for male victims; 
+an odds ratio greater than 1 indicates higher adjusted odds.
+
+```{r city-models}
+city_or_df =
+  homicide_df |>
+  nest(city_data = -city_state) |>
+  mutate(
+    models = map(city_data, \(df) glm(
+      resolved ~ victim_age + victim_sex + victim_race,
+      data = df, family = binomial()
+    )),
+    estimates = map(models, broom::tidy)
+  ) |>
+  select(city_state, estimates) |>
+  unnest(estimates) |>
+  filter(term == "victim_sexMale") |>
+  transmute(
+    city_state,
+    adjusted_or = exp(estimate),
+    lower_ci = exp(estimate - 1.96 * std.error),
+    upper_ci = exp(estimate + 1.96 * std.error)
+  ) |>
+  arrange(adjusted_or)
+
+city_or_df |> knitr::kable(digits = 3)
+```
+
+```{r city-plot, fig.height=10}
+city_or_df |>
+  mutate(city_state = fct_reorder(city_state, adjusted_or)) |>
+  ggplot(aes(x = adjusted_or, y = city_state)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray40") +
+  geom_errorbar(aes(xmin = lower_ci, xmax = upper_ci), width = 0.2) +
+  geom_point(size = 1.7, color = "steelblue4") +
+  labs(
+    title = "Adjusted odds of homicide resolution: male versus female victims",
+    subtitle = "Odds ratios adjusted for victim age and race; 95% Wald confidence intervals",
+    x = "Adjusted odds ratio (male vs. female)",
+    y = "City"
+  )
+```
+
+The graph orders cities by their adjusted odds ratios. The dashed vertical line indicates an odds ratio of 1.
+Estimates to the left of 1 indicate lower odds of resolution for male victims, while estimates to the right indicate higher odds. 
+Confidence intervals crossing 1 do not provide strong evidence of a sex difference at the 5% significance level.
