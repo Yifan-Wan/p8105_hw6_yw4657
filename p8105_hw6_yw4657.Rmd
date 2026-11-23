@@ -46,6 +46,8 @@ homicide_df |>
 `resolved = 1` denotes cases closed by arrest; `resolved = 0` denotes cases not closed by arrest. 
 The comparison of interest is **Male versus Female**, holding victim age and race fixed.
 
+### Baltimore logistic regression
+
 ```{r baltimore-model}
 baltimore_fit =
   homicide_df |>
@@ -80,6 +82,8 @@ is `r round(baltimore_result$adjusted_or, 3)` (95% CI: `r round(baltimore_result
 An odds ratio less than 1 indicates lower adjusted odds of a case being closed by arrest for male victims; 
 an odds ratio greater than 1 indicates higher adjusted odds.
 
+### Fit a model for each city
+
 ```{r city-models}
 city_or_df =
   homicide_df |>
@@ -105,6 +109,8 @@ city_or_df =
 city_or_df |> knitr::kable(digits = 3)
 ```
 
+### Plot the adjusted odds ratios
+
 ```{r city-plot, fig.height=10}
 city_or_df |>
   mutate(city_state = fct_reorder(city_state, adjusted_or)) |>
@@ -123,3 +129,75 @@ city_or_df |>
 The graph orders cities by their adjusted odds ratios. The dashed vertical line indicates an odds ratio of 1.
 Estimates to the left of 1 indicate lower odds of resolution for male victims, while estimates to the right indicate higher odds. 
 Confidence intervals crossing 1 do not provide strong evidence of a sex difference at the 5% significance level.
+
+## Problem 2: Bootstrap inference
+
+```{r weather-clean}
+data("weather_df")
+weather_analysis =
+  weather_df |>
+  select(tmax, tmin, prcp) |>
+  drop_na()
+
+weather_fit = lm(tmax ~ tmin + prcp, data = weather_analysis)
+
+broom::tidy(weather_fit) |> knitr::kable(digits = 3)
+broom::glance(weather_fit) |>
+  select(r.squared, adj.r.squared, sigma) |>
+  knitr::kable(digits = 3)
+```
+
+The estimated coefficient ratio below is `beta_tmin / beta_prcp`, where both slopes are taken 
+from the regression `tmax ~ tmin + prcp`. Their units differ, so the ratio is a mathematical 
+summary rather than a dimensionless effect measure.
+
+```{r bootstrap-models}
+set.seed(2026)
+boot_results =
+  weather_analysis |>
+  modelr::bootstrap(n = 5000) |>
+  mutate(
+    models = map(strap, \(df) lm(tmax ~ tmin + prcp, data = df)),
+    r_squared = map_dbl(models, \(fit) broom::glance(fit)$r.squared),
+    beta_ratio = map_dbl(models, \(fit) {
+      betas = coef(fit)
+      unname(betas["tmin"] / betas["prcp"])
+    })
+  ) |>
+  select(r_squared, beta_ratio)
+
+boot_results |>
+  pivot_longer(everything(), names_to = "quantity", values_to = "estimate") |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram(bins = 40, fill = "steelblue", color = "white") +
+  facet_wrap(~ quantity, scales = "free", ncol = 1) +
+  labs(
+    title = "Bootstrap distributions from 5,000 resamples",
+    x = "Bootstrap estimate", y = "Count"
+  )
+```
+
+```{r bootstrap-intervals}
+boot_summary =
+  boot_results |>
+  pivot_longer(everything(), names_to = "quantity", values_to = "estimate") |>
+  group_by(quantity) |>
+  summarize(
+    bootstrap_mean = mean(estimate),
+    lower_ci = quantile(estimate, 0.025),
+    upper_ci = quantile(estimate, 0.975),
+    .groups = "drop"
+  )
+
+boot_summary |> knitr::kable(digits = 3)
+```
+
+Based on 5,000 bootstrap samples, the percentile 95% confidence interval for the regression R-squared 
+is [`r round(boot_summary$lower_ci[boot_summary$quantity == "r_squared"], 3)`, 
+`r round(boot_summary$upper_ci[boot_summary$quantity == "r_squared"], 3)`]. 
+The percentile 95% confidence interval for the ratio of the `tmin` and `prcp` coefficients 
+is [`r round(boot_summary$lower_ci[boot_summary$quantity == "beta_ratio"], 3)`, 
+`r round(boot_summary$upper_ci[boot_summary$quantity == "beta_ratio"], 3)`]. 
+The plots display the sampling variability approximated by bootstrap resampling. 
+The ratio may be skewed or unstable if the estimated precipitation coefficient is near zero.
+
